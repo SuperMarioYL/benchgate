@@ -1,0 +1,30 @@
+# Example Harbor job config for the BenchGate audit and gate flow.
+#
+# This is the "dirty" example: it carries real-shaped gateway keys in
+# environment.env — exactly the surface the model under test can read
+# once the eval starts. The values below are fixtures with valid key
+# shapes, not live credentials.
+#
+#   benchgate audit benchgate.example.yaml      # exposure ledger, exit 1
+#   benchgate audit examples/clean.yaml         # cleaned variant, exit 0
+#   benchgate audit --json benchgate.example.yaml > report.json
+#   benchgate gate benchgate.example.yaml -- <eval command>
+#
+# CI wiring: run the audit before the eval job and let the exit code gate
+# it —
+#   benchgate audit benchgate.example.yaml || echo "exposed credentials" && exit 1
+
+agents:
+  - name: terminus-2
+tasks:
+  - path: tasks/hello-world
+
+environment:
+  # Harbor defaults to public egress when network_mode is unset; keep it
+  # explicit so the audit's reachability verdict is unambiguous.
+  network_mode: public
+  env:
+    OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+    OPENROUTER_API_KEY: "sk-or-v1-EXAMPLE-KEY-0000000000000000000000000000000000000000000000000"
+    MODELSCOPE_SDK_TOKEN: "ms-01234567-89ab-cdef-0123-456789abcdef"
+    PROVIDER_BASE_URL: "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"

@@ -1,0 +1,18 @@
+# Cleaned variant of benchgate.example.yaml: no key variables at all.
+# Gateway base URLs are configuration, not credentials, so they stay.
+#
+#   benchgate audit examples/clean.yaml    # exit 0
+#
+# Keys belong on the audit host (harness credential pipeline or the
+# benchgate gate mock), never inside the sandbox config.
+
+agents:
+  - name: terminus-2
+tasks:
+  - path: tasks/hello-world
+
+environment:
+  network_mode: public
+  env:
+    OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+    PROVIDER_BASE_URL: "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
