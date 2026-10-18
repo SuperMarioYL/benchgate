@@ -1,0 +1,29 @@
+# go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+/benchgate
+
+# go test
+*.test
+*.out
+coverage.txt
+
+# editors
+.DS_Store
+
+# local scratch that never ships
+/build-scratch/
+BUILD_SETUP_NEXT_STEPS.md
+PUBLISH_BLOCKED.md
+.builder_*
+.build_metadata*
+.stage_*
+.spawn.*
+_build_ctx.json
+.claude/
+CLAUDE.md
