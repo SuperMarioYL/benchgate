@@ -1,0 +1,60 @@
+{
+  "product": "benchgate",
+  "version": "0.1.0",
+  "recorded_at": "2026-10-18",
+  "environment": {
+    "go": "1.24",
+    "os": "darwin/arm64",
+    "docker_required": false,
+    "network": "audit live probe requires outbound HTTPS to the gateway endpoints unless --offline"
+  },
+  "demo": {
+    "cast": "docs/demo/benchgate-audit.cast",
+    "cast_format": "asciinema v2",
+    "recording_script": "docs/demo/record.sh",
+    "input": {
+      "file": "benchgate.example.yaml",
+      "note": "Harbor job-shaped config with fixture keys of valid shapes; not live credentials",
+      "clean_variant": "examples/clean.yaml"
+    },
+    "commands": [
+      "benchgate --version",
+      "benchgate audit benchgate.example.yaml",
+      "benchgate audit examples/clean.yaml",
+      "benchgate gate benchgate.example.yaml --dry-run",
+      "benchgate gate benchgate.example.yaml -- bash -c 'curl -s -X POST $BENCHGATE_MOCK_URL/chat/completions -d \"{\\\"model\\\":\\\"deepseek-v4.1-flash\\\"}\"'"
+    ],
+    "results": {
+      "audit_dirty": {
+        "findings": 2,
+        "reachable": 2,
+        "findings_detail": [
+          "MODELSCOPE_SDK_TOKEN (env, modelscope, value_shape ms-, live probe HTTP 200)",
+          "OPENROUTER_API_KEY (env, openrouter, value_shape sk-or-v1-, live probe HTTP 200)"
+        ],
+        "exit_code": 1
+      },
+      "audit_clean": { "findings": 0, "exit_code": 0 },
+      "gate_dry_run": {
+        "replacements": 4,
+        "reverify": "no real credential shapes and no real gateway endpoints remain",
+        "config_restored": true,
+        "exit_code": 0
+      },
+      "gate_eval": {
+        "eval_command_exit_code": 0,
+        "mock_requests_served": 1,
+        "mock_response": "[benchgate-mock] This response came from the local mock gateway; no real provider was called.",
+        "config_restored": true
+      }
+    }
+  },
+  "limitations": [
+    "The audit is config-level: reachability is derived from the declared network policy (public/allowlist/no-network) plus an unauthenticated endpoint liveness GET from the audit host. It does not docker-exec into a running container.",
+    "The probe never sends the audited credential; only an unauthenticated GET /models is issued.",
+    "The gate's v0.1 guarantee is config-level: the patched config carries no real key and no real gateway URL (enforced by re-verification). The mock binds loopback by default, so eval processes in a separate Docker container network need the mock made reachable (--listen on a reachable interface plus a host-gateway base URL); this is not automated in v0.1.",
+    "Mounted credential files are detected but cannot be auto-mocked; gate warns and requires their removal.",
+    "Built-in gateway endpoints cover OpenRouter and ModelScope; other providers fall back to generic sk-/Bearer and name-based detection with gateway=unknown and no live probe.",
+    "The CI exit code is binary: any finding exits 1, including findings judged not reachable; per-finding reachable verdicts live in the report."
+  ]
+}
