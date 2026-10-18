@@ -69,9 +69,9 @@ func TestLoadTaskTomlDefaultsToPublic(t *testing.T) {
 		t.Errorf("NetworkMode = %q, want default %q", cfg.NetworkMode, NetworkPublic)
 	}
 	want := map[string]string{
-		"OPENROUTER_API_KEY": "sk-or-v1-0123456789abcdef0123456789abcdef",
+		"OPENROUTER_API_KEY":   "sk-or-v1-0123456789abcdef0123456789abcdef",
 		"MODELSCOPE_SDK_TOKEN": "ms-11111111-2222-3333-4444-555555555555",
-		"PROVIDER_BASE_URL":  "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}",
+		"PROVIDER_BASE_URL":    "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}",
 	}
 	if !reflect.DeepEqual(cfg.Env, want) {
 		t.Errorf("Env = %v, want %v", cfg.Env, want)

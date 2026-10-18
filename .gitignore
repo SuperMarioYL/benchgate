@@ -27,3 +27,6 @@ PUBLISH_BLOCKED.md
 _build_ctx.json
 .claude/
 CLAUDE.md
+
+# gate crash-safety backups (original config while an eval runs gated)
+*.benchgate.bak
