@@ -64,7 +64,7 @@ findings: 2 (reachable: 2)
 [2] OPENROUTER_API_KEY
     surface=env  gateway=openrouter  reachable=true
     detected=value_shape  resolved=true
-    fingerprint: sk-or-v1-…(len=73) sha256:6f3fc1fd3a97c370
+    fingerprint: sk-or-v1-…(len=70) sha256:e7cceab978af41d5
       - policy: network_mode "public": no egress control is configured, so the gateway endpoint is reachable and the credential is spendable
       - http_no_auth: GET https://openrouter.ai/api/v1/models -> HTTP 200 (no auth header sent; the audited key was not used)
 
@@ -120,7 +120,7 @@ $ benchgate gate benchgate.example.yaml -- bash -c 'curl -s -X POST $BENCHGATE_M
 gate: mock gateway at http://127.0.0.1:59196/api/v1
   MODELSCOPE_SDK_TOKEN         credential_value -> mock key  (value_shape; ms-…(len=39) sha256:0b08e5ab4b6dcd18)
   OPENAI_BASE_URL              gateway_url -> http://127.0.0.1:59196/api/v1  (references gateway host openrouter.ai)
-  OPENROUTER_API_KEY           credential_value -> mock key  (value_shape; sk-or-v1-…(len=73) sha256:6f3fc1fd3a97c370)
+  OPENROUTER_API_KEY           credential_value -> mock key  (value_shape; sk-or-v1-…(len=70) sha256:e7cceab978af41d5)
   PROVIDER_BASE_URL            gateway_url -> http://127.0.0.1:59196/api/v1  (references gateway host openrouter.ai)
 gate: re-verified — no real credential shapes and no real gateway endpoints remain in the patched config
 {"choices":[{"finish_reason":"stop","index":0,"message":{"content":"[benchgate-mock] This response came from the local mock gateway; no real provider was called.","role":"assistant"}}],"id":"chatcmpl-benchgate-mock","model":"deepseek-v4.1-flash","object":"chat.completion","usage":{"completion_tokens":0,"prompt_tokens":0,"total_tokens":0}}
