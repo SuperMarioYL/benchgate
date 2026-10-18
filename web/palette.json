@@ -1,0 +1,38 @@
+{
+  "mode": "auto",
+  "id": "e6df56-aae76a-f6d7ac-fce2bd70ec31",
+  "identity": "https://github.com/supermarioyl/benchgate",
+  "primary": "#e6df56",
+  "secondary": "#aae76a",
+  "highlight": "#f6d7ac",
+  "dark": {
+    "bg": "#0a0c0d",
+    "panel": "#131717",
+    "code": "#141613",
+    "ink": "#fdf7ee",
+    "muted": "#b2b8a8",
+    "line": "#3a3a1d",
+    "primary": "#e6df56",
+    "secondary": "#aae76a",
+    "highlight": "#f6d7ac",
+    "accent": "#e6df56",
+    "buttonStart": "#7d792f",
+    "buttonEnd": "#5f803b",
+    "buttonText": "#ffffff"
+  },
+  "light": {
+    "bg": "#fefef9",
+    "panel": "#fefdf7",
+    "code": "#fdfdf3",
+    "ink": "#27291c",
+    "muted": "#71776a",
+    "line": "#f7f5cb",
+    "primary": "#7b772e",
+    "secondary": "#5d7e3a",
+    "highlight": "#83725c",
+    "accent": "#7b772e",
+    "buttonStart": "#7d792f",
+    "buttonEnd": "#5f803b",
+    "buttonText": "#ffffff"
+  }
+}

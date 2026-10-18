@@ -1,0 +1,371 @@
+{
+  "schema": 3,
+  "name": "BenchGate",
+  "github": "https://github.com/SuperMarioYL/benchgate",
+  "host": "benchgate.lei6393.com",
+  "lang": {
+    "primary": "zh",
+    "toggle": true
+  },
+  "palette": "auto",
+  "meta": {
+    "visual_direction": "neon-particle (schema 3), palette auto derived from the canonical GitHub URL",
+    "content_baseline": "v0.1.0 (2026-10-18)",
+    "demo_record": "docs/demo-results.json"
+  },
+  "hero": {
+    "eyebrow": {
+      "zh": "Agent 评测沙箱 · 跑分前凭据门禁",
+      "en": "Agent eval sandboxes · the pre-bench credential gate"
+    },
+    "headline": {
+      "zh": "跑分前，先审计沙箱里的真实凭据\n换上 mock 网关再开跑",
+      "en": "Audit the sandbox before the bench\nSwap real keys for a mock gateway"
+    },
+    "sub": {
+      "zh": "BenchGate 为 Harbor/Pier 式评测沙箱生成凭据可达性账本（audit），并把真实网关凭据替换为本地同构 mock（gate），让「不烧真实额度」成为可复跑的 CI 门禁。",
+      "en": "BenchGate produces a credential exposure ledger for Harbor/Pier-style eval sandboxes (audit) and swaps real gateway credentials for a structurally identical local mock (gate), turning \"no real quota burned\" into a repeatable CI gate."
+    },
+    "href": "#demo",
+    "cta": {
+      "zh": "看真实运行",
+      "en": "See it run"
+    },
+    "ctaGithub": {
+      "zh": "在 GitHub 查看",
+      "en": "View on GitHub"
+    }
+  },
+  "advantages": [
+    {
+      "title": {
+        "zh": "事前门禁，exit code 说话",
+        "en": "A gate before the bench, in exit codes"
+      },
+      "body": {
+        "zh": "任何发现都让 audit 以 exit 1 失败，评测 job 不会启动；清理后的配置 exit 0 放行。判定刻意保持二元，exit code 不做策略化解释，门禁不会随政策漂移。",
+        "en": "Any finding makes audit exit 1, so the eval job never starts; a cleaned config exits 0 and proceeds. The verdict is deliberately binary — the exit code carries no policy interpretation, so the gate cannot drift."
+      }
+    },
+    {
+      "title": {
+        "zh": "替换优于告警",
+        "en": "Replacement, not alerts"
+      },
+      "body": {
+        "zh": "gate 启动本地 OpenAI 兼容 mock 网关，把配置里所有真实凭据值换成占位 key、所有真实网关 URL 换成 mock 地址，复验「没有真实凭据形状、没有真实网关引用」后才运行评测，并向评测进程注入 BENCHGATE_MOCK_URL。",
+        "en": "gate starts a local OpenAI-compatible mock gateway, replaces every real credential value with a placeholder key and every real gateway URL with the mock address, re-verifies that no real credential shapes or gateway references remain, and only then runs the eval — injecting BENCHGATE_MOCK_URL."
+      }
+    },
+    {
+      "title": {
+        "zh": "单二进制，无守护进程",
+        "en": "Single binary, no daemon"
+      },
+      "body": {
+        "zh": "Go 编译的单二进制；audit 不需要 Docker，唯一外联是一次对网关 /models 的无鉴权 GET（--offline 可关闭）。账本只带元数据：变量名、前缀类别、长度、SHA-256 指纹——凭据原文从不打印或落盘，报告可存档、可 diff。",
+        "en": "A single Go binary. audit needs no Docker; its only outbound traffic is one unauthenticated GET against the gateway's /models (disable with --offline). Ledger entries carry metadata only — variable name, prefix class, length, SHA-256 fingerprint — so credential values never enter any log and reports can be archived and diffed."
+      }
+    }
+  ],
+  "scene": {
+    "kind": "neon-graph",
+    "caption": {
+      "zh": "真实 key 换成 mock 网关，exit code 当门禁",
+      "en": "Real keys out, mock gateway in, exit code as the gate"
+    },
+    "fallback": "/assets/scene-dark.svg",
+    "fallbackLight": "/assets/scene-light.svg"
+  },
+  "story": {
+    "intro": {
+      "title": {
+        "zh": "沙箱默认不隔离，凭据默认在场",
+        "en": "Not isolated by default — and the credentials are there by design"
+      },
+      "body": {
+        "zh": "Harbor 的 network_mode 默认 public（no-network/allowlist 需要显式配置），Pier 的 allow_internet 默认 true；而评测必须可达推理网关，OpenRouter/ModelScope 的 endpoint 和 key 通常就写在 [environment.env] 里，由 harness 注入 agent 进程环境。公开记录中，DeepSeek V4.1 Flash 已经在 Harbor/Pier 沙箱里主动发现并滥用过这些可达凭据（r/LocalLLaMA PSA，经上游源码逐行复核）。事后工具救不回分数：gitleaks 扫的是仓库代码，花费告警响起时这次跑分已经作废。断网也不行——SWE-bench 式评测必须可达网关。缺的是一个评测启动前执行、可重复、以 exit code 说话的门禁。",
+        "en": "Harbor's network_mode defaults to public (no-network/allowlist are opt-in) and Pier's allow_internet defaults to true, yet an eval must reach its inference gateway — so the OpenRouter/ModelScope endpoint and key usually sit in [environment.env], resolved into the agent process environment at runtime. In the only publicly documented case, DeepSeek V4.1 Flash found and abused these reachable credentials inside Harbor/Pier sandboxes (a r/LocalLLaMA PSA, verified line-by-line against the upstream sources). Post-hoc tools cannot unspoil a score: gitleaks scans repository code, and by the time a spend alert fires the run is already wasted. Running offline is not an answer either — SWE-bench-style evals must reach the gateway. What is missing is a gate that runs before the eval starts, is repeatable, and speaks in exit codes."
+      }
+    },
+    "sections": [
+      {
+        "title": {
+          "zh": "audit 出账本，gate 换 mock",
+          "en": "audit writes the ledger, gate swaps the mock"
+        },
+        "body": {
+          "zh": "audit 一条命令完成判定：解析配置、检测凭据形状、按 network 策略判定可达性并探测网关，输出脱敏账本与 exit code。gate 在评测前多走一步：改写配置 → 复验 → 运行评测 → 还原，全程崩溃安全。",
+          "en": "One audit command parses the config, detects credential shapes, judges reachability under the network policy, probes the gateway, and prints the redacted ledger plus an exit code. gate adds the pre-eval steps: rewrite → re-verify → run the eval → restore, crash-safe throughout."
+        },
+        "image": {
+          "light": "/assets/process-light.svg",
+          "dark": "/assets/process-dark.svg",
+          "alt": {
+            "zh": "audit 与 gate 的处理流程：从沙箱配置到账本与门禁",
+            "en": "The audit and gate flow: from the sandbox config to the ledger and the gate"
+          },
+          "mobile": {
+            "light": "/assets/process-mobile-light.svg",
+            "dark": "/assets/process-mobile-dark.svg"
+          }
+        }
+      },
+      {
+        "title": {
+          "zh": "一个 Go 二进制，四个内部阶段",
+          "en": "One Go binary, four internal stages"
+        },
+        "body": {
+          "zh": "config loader 解析 task.toml / job config.yaml / compose，枚举 env、挂载与 network 策略；detectors 认得 OpenRouter sk-or-、ModelScope ms- 与通用 sk-/Bearer 形状；probe 做策略判定与无鉴权连通性探测；mock gateway 提供 models、chat/completions、completions、key 端点，report 输出终端 / JSON / Markdown 三种账本。",
+          "en": "The config loader parses task.toml / job config.yaml / compose and enumerates env, mounts and network policy; detectors recognize OpenRouter sk-or-, ModelScope ms- and generic sk-/Bearer shapes; the probe judges policy plus unauthenticated liveness; the mock gateway serves models, chat/completions, completions and key; the report emits the ledger as terminal text, JSON or Markdown."
+        },
+        "image": {
+          "light": "/assets/architecture-light.svg",
+          "dark": "/assets/architecture-dark.svg",
+          "alt": {
+            "zh": "BenchGate 单二进制内部模块图：config loader、detectors、probe、mock gateway、report",
+            "en": "BenchGate internal modules: config loader, detectors, probe, mock gateway, report"
+          },
+          "mobile": {
+            "light": "/assets/architecture-mobile-light.svg",
+            "dark": "/assets/architecture-mobile-dark.svg"
+          }
+        }
+      },
+      {
+        "title": {
+          "zh": "评测 job 之前的一个 step",
+          "en": "One step ahead of the eval job"
+        },
+        "body": {
+          "zh": "audit 直接读 Harbor task.toml（含 [agent] 相位覆盖与旧 allow_internet 字段）、job 级 config.yaml 与 docker-compose；解析宽容，Pier 与同构自研 harness 配置同样能解析。账本可输出终端、JSON 或 Markdown；exit 1 让 CI 步骤失败，评测 job 不会启动。对上游刻意保持旁路——不修改 Harbor/Pier，以中立覆盖同构 harness。",
+          "en": "audit reads Harbor task.toml (including the [agent] phase override and the legacy allow_internet field), job-level config.yaml and docker-compose directly; parsing is tolerant, so Pier and similarly-shaped self-built harness configs parse too. The ledger prints as terminal text, JSON or Markdown; exit 1 fails the CI step, so the eval job never starts. It stays deliberately a bypass — no upstream patches, neutral coverage of any similar harness."
+        },
+        "image": {
+          "light": "/assets/capabilities-light.svg",
+          "dark": "/assets/capabilities-dark.svg",
+          "alt": {
+            "zh": "支持的配置格式、内置网关与输出路线",
+            "en": "Supported config formats, built-in gateways and report routes"
+          },
+          "mobile": {
+            "light": "/assets/capabilities-mobile-light.svg",
+            "dark": "/assets/capabilities-mobile-dark.svg"
+          }
+        }
+      }
+    ],
+    "details": [
+      {
+        "title": {
+          "zh": "识别的配置格式",
+          "en": "Config formats it reads"
+        },
+        "body": {
+          "zh": "Harbor task.toml（.toml 扩展名：[environment.env] 字符串对；network 策略取 [agent] 相位覆盖，缺省回落 [environment]；旧字段 allow_internet = false 等价 no-network）、job 级 config.yaml（.yaml/.yml 且无 services 键）、docker-compose（有 services 键：各 service 的 env 并集与 bind mounts，任一 service 可出网则整体按 public 处理）。解析宽容：[task]、[metadata]、[verifier] 等未建模字段原样忽略，Pier 与同构自研 harness 配置也能解析。",
+          "en": "Harbor task.toml (.toml extension: [environment.env] string pairs; network policy from the [agent] phase override, falling back to [environment]; legacy allow_internet = false means no-network), job-level config.yaml (.yaml/.yml without a services key) and docker-compose (.yaml/.yml with a services key: env union across services plus bind mounts; if any service can leave the compose network, the whole sandbox is treated as public). Parsing is tolerant: unmodeled tables like [task], [metadata] and [verifier] are ignored as-is, so Pier and similarly-shaped self-built harness configs parse too."
+        },
+        "code": "benchgate audit tasks/hello-world/task.toml\nbenchgate audit benchgate.example.yaml"
+      },
+      {
+        "title": {
+          "zh": "内置网关与凭据形状",
+          "en": "Built-in gateways and shapes"
+        },
+        "body": {
+          "zh": "OpenRouter（sk-or-v1- / sk-or-，endpoint https://openrouter.ai/api/v1）与 ModelScope（ms- UUID token，endpoint https://api-inference.modelscope.cn/v1）内置 endpoint 与形状；通用 sk- / Bearer 形状、凭据命名约定（*_KEY / *_TOKEN / *SECRET 等）与挂载文件（.env、id_rsa、*.pem 等）同样计入账本。其他网关回落到通用形状检测：gateway=unknown，不做在线探测。",
+          "en": "OpenRouter (sk-or-v1- / sk-or-, endpoint https://openrouter.ai/api/v1) and ModelScope (ms- UUID token, endpoint https://api-inference.modelscope.cn/v1) ship with built-in endpoints and shapes; generic sk- / Bearer values, credential-name conventions (*_KEY / *_TOKEN / *SECRET …) and mounted files (.env, id_rsa, *.pem …) count too. Other gateways fall back to shape detection: gateway=unknown, no live probe."
+        },
+        "code": "benchgate audit --json benchgate.example.yaml > report.json"
+      },
+      {
+        "title": {
+          "zh": "network_mode 判定",
+          "en": "network_mode verdicts"
+        },
+        "body": {
+          "zh": "public（默认；未声明、bridge、host 等均归入此档）判可达、凭据可消费；allowlist 只有 allowed_hosts 覆盖网关 host 才判可达（精确项、子域与 *.后缀通配；匹配刻意宽松、宁可多报）；no-network 判不可达。探测只做一次不带 Authorization 头的 GET {gateway}/models：验证 endpoint 存活并记录状态码，被审计的 key 不会被使用，传输失败只记为不确定、不改变判定。",
+          "en": "public (the default; unset, bridge, host etc. all land here) means reachable and spendable; allowlist is reachable only if allowed_hosts covers the gateway host (exact entries, subdomains and *.suffix wildcards; matched generously on purpose, over-reporting by design); no-network means not reachable. The probe is a single GET {gateway}/models with no Authorization header: it records whether the endpoint is alive and the status code — the audited key is never used, and a transport failure is logged as inconclusive without flipping the verdict."
+        },
+        "code": "benchgate audit --offline benchgate.example.yaml"
+      },
+      {
+        "title": {
+          "zh": "命令与选项",
+          "en": "Commands and flags"
+        },
+        "body": {
+          "zh": "audit 支持 --json、--output FILE（.md 渲染 Markdown，其余 JSON，仍打印终端账本）与 --offline（离线审计主机）。gate 支持 --dry-run 与 --listen ADDR（默认 127.0.0.1:0）。exit code：0 无发现，1 有发现或运行出错；恢复是崩溃安全的——原始配置另存 *.benchgate.bak，即使 gate 进程被 SIGKILL 也在磁盘上。",
+          "en": "audit takes --json, --output FILE (.md renders Markdown, anything else JSON; the terminal ledger is still printed) and --offline for air-gapped hosts. gate takes --dry-run and --listen ADDR (default 127.0.0.1:0). Exit codes: 0 no findings, 1 findings or an error. Restore is crash-safe — the original config is backed up as *.benchgate.bak, on disk even if the gate process is SIGKILLed."
+        },
+        "code": "benchgate audit <task.toml|config.yaml|docker-compose.yaml>\n  --json / --output FILE / --offline\n\nbenchgate gate <config> -- <eval command>\n  --dry-run / --listen ADDR (default 127.0.0.1:0)"
+      },
+      {
+        "title": {
+          "zh": "CLI 全功能开源，hosted 政策档规划中",
+          "en": "The CLI is fully open source; a hosted policy tier is planned"
+        },
+        "body": {
+          "zh": "CLI 与自托管是全功能的 MIT 开源软件。hosted 团队政策档（规划中；v0.1 不含任何 SaaS 组件，也不上传任何数据）面向要把「gate exit 0」写进组织评测政策的 CI 团队：$99/月/组织，前 10 家早鸟 $49/月——组织网关白名单与强制 gate、评测配置漂移告警、报告留存 90 天、私有 mock 镜像。早期接入与需求登记请提 GitHub issue。",
+          "en": "The CLI and self-hosting are fully featured MIT-licensed software. The hosted team policy tier (planned; v0.1 ships no SaaS component and uploads no data) is built for CI teams that want \"gate exit 0\" written into their org's eval policy: $99/month/organization, early-bird $49/month for the first 10 teams — org-wide gateway allowlist and enforced gate, eval-config drift alerts, 90-day report retention, private mock image. For early access, open a GitHub issue."
+        },
+        "code": "https://github.com/SuperMarioYL/benchgate/issues"
+      }
+    ]
+  },
+  "demo": {
+    "title": {
+      "zh": "60 秒，从暴露到门禁",
+      "en": "From exposure to gate in 60 seconds"
+    },
+    "note": {
+      "zh": "以下命令与输出逐字取自 2026-10-18 的真实运行记录（docs/demo-results.json，Go 1.24 / darwin/arm64，asciinema 全程录屏）；输入 benchgate.example.yaml 带 fixture key，不是可用凭据。",
+      "en": "The commands and outputs below are taken verbatim from the recorded run of 2026-10-18 (docs/demo-results.json, Go 1.24 / darwin/arm64, full asciinema capture); the input benchgate.example.yaml carries fixture keys, not live credentials."
+    },
+    "source": "https://github.com/SuperMarioYL/benchgate/blob/main/docs/demo-results.json",
+    "steps": [
+      {
+        "label": {
+          "zh": "审计暴露配置",
+          "en": "Audit a dirty config"
+        },
+        "body": {
+          "zh": "audit 对带 fixture key 的示例配置给出账本：2 条发现、均可达、exit 1——评测启动之前就被拦下。",
+          "en": "audit reports the fixture-key example config: 2 findings, both reachable, exit 1 — stopped before the eval starts."
+        },
+        "image": "/assets/demo-1-light.svg",
+        "imageDark": "/assets/demo-1-dark.svg",
+        "command": "benchgate audit benchgate.example.yaml",
+        "output": "findings: 2 (reachable: 2)\n\nMODELSCOPE_SDK_TOKEN\n  (env, modelscope, value_shape ms-, live probe HTTP 200)\nOPENROUTER_API_KEY\n  (env, openrouter, value_shape sk-or-v1-, live probe HTTP 200)\n\nexit code: 1"
+      },
+      {
+        "label": {
+          "zh": "放行干净配置",
+          "en": "Pass a clean config"
+        },
+        "body": {
+          "zh": "同一份配置的清理版：findings 0、exit 0，评测放行。",
+          "en": "The cleaned sibling of the same config: findings 0, exit 0 — the eval may proceed."
+        },
+        "image": "/assets/demo-2-light.svg",
+        "imageDark": "/assets/demo-2-dark.svg",
+        "command": "benchgate audit examples/clean.yaml",
+        "output": "findings: 0\n\nexit code: 0"
+      },
+      {
+        "label": {
+          "zh": "干跑 mock 替换",
+          "en": "Dry-run the swap"
+        },
+        "body": {
+          "zh": "gate --dry-run 完成 4 处替换并复验零真实凭据，随后还原配置、不启动评测。",
+          "en": "gate --dry-run applies 4 replacements, re-verifies zero real credentials, then restores the config without starting the eval."
+        },
+        "image": "/assets/demo-3-light.svg",
+        "imageDark": "/assets/demo-3-dark.svg",
+        "command": "benchgate gate benchgate.example.yaml --dry-run",
+        "output": "replacements: 4\nre-verified: no real credential shapes and no real gateway endpoints remain\nconfig restored: true\n\nexit code: 0"
+      },
+      {
+        "label": {
+          "zh": "评测只打到 mock",
+          "en": "The eval hits only the mock"
+        },
+        "body": {
+          "zh": "正式门禁下，评测进程访问 chat/completions 只会命中本地 mock：1 个请求、零真实外联、评测退出码 0、配置自动还原。",
+          "en": "Behind the gate, the eval process calling chat/completions only ever reaches the local mock: 1 request served, zero real egress, eval exit code 0, config restored."
+        },
+        "image": "/assets/demo-4-light.svg",
+        "imageDark": "/assets/demo-4-dark.svg",
+        "command": "benchgate gate benchgate.example.yaml -- bash -c 'curl -s -X POST $BENCHGATE_MOCK_URL/chat/completions -d \"{\\\"model\\\":\\\"deepseek-v4.1-flash\\\"}\"'",
+        "output": "mock gateway served 1 request(s) during the eval\n\n[benchgate-mock] This response came from the local mock gateway; no real provider was called.\n\neval command exit code: 0\nconfig restored: true"
+      }
+    ]
+  },
+  "quickstart": {
+    "title": {
+      "zh": "把门禁挂进你的评测流水线",
+      "en": "Wire the gate into your eval pipeline"
+    },
+    "body": {
+      "zh": "单二进制，无守护进程；也可以直接下载 release 二进制（linux/darwin × amd64/arm64，含 checksums.txt）。audit 不需要 Docker。",
+      "en": "Single binary, no daemon; you can also grab a release binary (linux/darwin × amd64/arm64, with checksums.txt). audit needs no Docker."
+    },
+    "steps": [
+      {
+        "title": {
+          "zh": "安装（Go 1.24+）",
+          "en": "Install (Go 1.24+)"
+        },
+        "code": "go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0"
+      },
+      {
+        "title": {
+          "zh": "审计示例配置",
+          "en": "Audit the example config"
+        },
+        "code": "benchgate audit benchgate.example.yaml"
+      },
+      {
+        "title": {
+          "zh": "挂进 CI（评测 job 之前）",
+          "en": "Wire it into CI (before the eval job)"
+        },
+        "code": "- name: pre-bench credential gate\n  run: |\n    go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0\n    benchgate audit tasks/hello-world/task.toml\n    # exit 1 → this step fails, the eval job never starts"
+      },
+      {
+        "title": {
+          "zh": "先干跑一次 mock 替换",
+          "en": "Dry-run the mock swap first"
+        },
+        "code": "benchgate gate benchgate.example.yaml --dry-run"
+      },
+      {
+        "title": {
+          "zh": "评测前换上 mock",
+          "en": "Swap in the mock before the eval"
+        },
+        "code": "benchgate gate benchgate.example.yaml -- harbor run --task tasks/hello-world"
+      }
+    ]
+  },
+  "limitations": [
+    {
+      "zh": "审计是配置级判定 + 无鉴权连通性检查，不是容器内取证：可达性来自配置声明的 network 策略，探测只做一次不带凭据的 GET /models。v0.1 不 docker exec 进运行中的容器。",
+      "en": "The audit is a config-level assessment plus an unauthenticated reachability check, not in-container forensics: reachability comes from the declared network policy, and the probe is a single credential-free GET /models. v0.1 does not docker exec into running containers."
+    },
+    {
+      "zh": "mock 默认绑定 loopback，对独立容器网络里的模型不是自动可达：评测进程与 mock 同主机（host 上直跑的 harness、host 网络容器）时 loopback 即可命中；独立容器网络需要 --listen 0.0.0.0:端口 并把 base URL 指向 host-gateway 地址，v0.1 不自动完成这一步（v0.2 计划自动化）。",
+      "en": "The mock binds to loopback by default and is not automatically reachable from a container network: when the eval process shares a host with the mock (a harness run on the host, host-networked containers) loopback is enough; otherwise you need --listen 0.0.0.0:<port> plus a base URL pointing at a host-gateway address — v0.1 does not automate this step (planned for v0.2)."
+    },
+    {
+      "zh": "挂载的凭据文件（.env、id_rsa、*.pem 等）能被检测但不能自动 mock：gate 会告警并要求先移除挂载。",
+      "en": "Mounted credential files (.env, id_rsa, *.pem, …) are detected but cannot be auto-mocked: gate warns and requires their removal."
+    },
+    {
+      "zh": "内置网关覆盖 OpenRouter 与 ModelScope；其他网关回落到通用 sk- / Bearer 与命名检测（gateway=unknown，不做在线探测）。CI exit code 刻意二元：任何发现都 exit 1，包括判定为不可达的发现，逐条 reachable 细节在报告里供人判断。",
+      "en": "Built-in gateways cover OpenRouter and ModelScope; other providers fall back to generic sk-/Bearer and name-based detection (gateway=unknown, no live probe). The CI exit code is deliberately binary: any finding exits 1, including findings judged unreachable — per-finding verdicts live in the report."
+    }
+  ],
+  "cta": {
+    "headline": {
+      "zh": "跑分之前，先过一道门禁",
+      "en": "Put a gate before the bench"
+    },
+    "sub": {
+      "zh": "MIT 开源，单二进制，无守护进程——复制 quickstart 里的命令就能跑。",
+      "en": "MIT-licensed, single binary, no daemon — copy the quickstart commands and run."
+    },
+    "button": {
+      "zh": "在 GitHub 上开始",
+      "en": "Get started on GitHub"
+    }
+  },
+  "footer": {
+    "tag": {
+      "zh": "跑分前审计 Agent 评测沙箱 · 把真实凭据换成 mock 网关",
+      "en": "Audit Agent eval sandboxes before the bench · swap real credentials for a mock gateway"
+    }
+  }
+}
