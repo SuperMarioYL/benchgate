@@ -10,9 +10,9 @@
 #   benchgate audit --json benchgate.example.yaml > report.json
 #   benchgate gate benchgate.example.yaml -- <eval command>
 #
-# CI wiring: run the audit before the eval job and let the exit code gate
-# it —
-#   benchgate audit benchgate.example.yaml || echo "exposed credentials" && exit 1
+# CI wiring: run the audit as its own step — any finding exits 1 and fails
+# the step on its own, which keeps the eval job from starting:
+#   benchgate audit benchgate.example.yaml
 
 agents:
   - name: terminus-2
