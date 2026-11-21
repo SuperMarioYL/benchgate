@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,8 +21,9 @@ import (
 
 // gateOptions carries the gate command flags.
 type gateOptions struct {
-	DryRun bool
-	Listen string
+	DryRun             bool
+	Listen             string
+	ContainerReachable bool
 }
 
 // backupSuffix is the crash-safety copy of the original config: if the
@@ -42,6 +45,10 @@ The gate does not rely on network isolation: even with default public
 egress, the model can only ever reach the mock, so no real quota is
 spent and scores stay clean.
 
+The gate refuses to run when a credential surface cannot be rewritten:
+bind-mounted credential files and credentials injected by a compose
+env_file. Remove the mount or inline the key so the gate can replace it.
+
 Use --dry-run to apply, verify and restore without starting the eval.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,6 +58,7 @@ Use --dry-run to apply, verify and restore without starting the eval.`,
 	}
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "apply and verify the mock rewrite, restore the config, and exit without running the eval")
 	cmd.Flags().StringVar(&opts.Listen, "listen", "127.0.0.1:0", "address for the mock gateway to listen on")
+	cmd.Flags().BoolVar(&opts.ContainerReachable, "container-reachable", false, "bind the mock on all interfaces and write a base URL that containers can reach")
 	return cmd
 }
 
@@ -67,10 +75,11 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 	}
 
 	out := cmd.OutOrStdout()
-	envExposures := detect.ScanEnv(cfg.Env)
-	for _, ex := range detect.ScanMounts(cfg.Mounts) {
-		fmt.Fprintf(out, "gate: warning: mounted credential file %s cannot be auto-mocked; remove the mount\n", ex.Path)
+	if blocked := unmockableSurfaces(cfg); len(blocked) > 0 {
+		return fmt.Errorf("gate cannot remove credentials it cannot rewrite: %s; remove the mount or inline the key, then re-run", strings.Join(blocked, "; "))
 	}
+
+	envExposures := detect.ScanEnv(cfg.Env)
 	if len(envExposures) == 0 {
 		fmt.Fprintln(out, "gate: no credential findings in the config; nothing to mock")
 		if opts.DryRun {
@@ -80,7 +89,15 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 		return finishEval(cmd, code, runErr)
 	}
 
-	gw, err := mocks.StartGateway(opts.Listen)
+	listen := opts.Listen
+	if opts.ContainerReachable && !cmd.Flags().Changed("listen") {
+		listen = "0.0.0.0:0"
+	}
+	if opts.ContainerReachable && !containerReachableListen(listen) {
+		return fmt.Errorf("--container-reachable needs a listen address a container can dial, got %q (try --listen 0.0.0.0:0)", listen)
+	}
+
+	gw, err := mocks.StartGateway(listen)
 	if err != nil {
 		return fmt.Errorf("start mock gateway: %w", err)
 	}
@@ -90,7 +107,17 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 		_ = gw.Stop(ctx)
 	}
 
-	replacements := mocks.PlanRewrite(cfg, gw.BaseURL())
+	mockURL := gw.BaseURL()
+	if opts.ContainerReachable {
+		host, ok := mocks.HostGatewayHost()
+		if !ok {
+			stop()
+			return fmt.Errorf("--container-reachable: no non-loopback host address found to advertise to containers")
+		}
+		mockURL = gw.BaseURLForHost(host)
+	}
+
+	replacements := mocks.PlanRewrite(cfg, mockURL)
 
 	original, err := os.ReadFile(configPath)
 	if err != nil {
@@ -116,7 +143,7 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 	// first because os.Exit would skip defers.
 	defer restore()
 
-	if err := mocks.RewriteFile(configPath, configPath, replacements, gw.BaseURL()); err != nil {
+	if err := mocks.RewriteFile(configPath, configPath, replacements, mockURL); err != nil {
 		stop()
 		return fmt.Errorf("rewrite config for mock gateway: %w", err)
 	}
@@ -134,7 +161,7 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 		return fmt.Errorf("patched config still exposes real credentials; original config restored")
 	}
 
-	fmt.Fprintf(out, "gate: mock gateway at %s\n", gw.BaseURL())
+	fmt.Fprintf(out, "gate: mock gateway at %s\n", mockURL)
 	for _, r := range replacements {
 		fmt.Fprintf(out, "  %-28s %s -> %s  (%s)\n", r.EnvVar, r.Kind, r.To, r.From)
 	}
@@ -146,7 +173,7 @@ func runGate(cmd *cobra.Command, configPath string, evalCmd []string, opts gateO
 		return nil
 	}
 
-	code, runErr := runEval(evalCmd, []string{"BENCHGATE_MOCK_URL=" + gw.BaseURL()})
+	code, runErr := runEval(evalCmd, []string{"BENCHGATE_MOCK_URL=" + mockURL})
 	fmt.Fprintf(out, "gate: eval exited with code %d; mock gateway served %d request(s) during the eval\n", code, len(gw.Requests()))
 	restore() // explicit: exitFunc below skips defers
 	stop()
@@ -162,6 +189,28 @@ func finishEval(cmd *cobra.Command, code int, runErr error) error {
 		exitFunc(code)
 	}
 	return nil
+}
+
+// unmockableSurfaces lists the credential surfaces gate cannot rewrite:
+// bind-mounted credential files (their bytes stay readable in the
+// container) and credentials injected through a compose env_file (their
+// values are not in the config document). Running the eval behind any of
+// them would make the gate's promise false, so the command refuses.
+func unmockableSurfaces(cfg *config.SandboxConfig) []string {
+	var blocked []string
+	for _, ex := range detect.ScanMounts(cfg.Mounts) {
+		blocked = append(blocked, fmt.Sprintf("bind-mounted credential file %s", ex.Path))
+	}
+	fromEnvFile := make(map[string]bool, len(cfg.EnvFileVars))
+	for _, name := range cfg.EnvFileVars {
+		fromEnvFile[name] = true
+	}
+	for _, ex := range detect.ScanEnv(cfg.Env) {
+		if fromEnvFile[ex.Path] {
+			blocked = append(blocked, fmt.Sprintf("credential %s injected by env_file", ex.Path))
+		}
+	}
+	return blocked
 }
 
 // runEval execs the eval command with stdio passed through, forwarding
@@ -199,4 +248,23 @@ func runEval(evalCmd []string, extraEnv []string) (int, error) {
 		return 0, fmt.Errorf("run eval command: %w", err)
 	}
 	return 0, nil
+}
+
+// containerReachableListen reports whether addr binds an interface a
+// container network can reach. A loopback-only mock would be written into
+// the config and silently never answer, so --container-reachable rejects
+// it up front.
+func containerReachableListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		return true
+	case "localhost":
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && !ip.IsLoopback()
 }

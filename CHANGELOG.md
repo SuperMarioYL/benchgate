@@ -3,6 +3,38 @@
 All notable changes to BenchGate are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.2.0] - 2026-11-22
+
+Fix-led iteration on v0.1.0: three fail-open defects closed, plus the promised
+container-reachable mock injection.
+
+### Fixed
+
+- `audit` attributes a name-only credential (`OPENROUTER_API_KEY = "${...}"`) to its
+  gateway (`openrouter`/`modelscope` from the variable name) and, under `allowlist`,
+  treats an unattributable gateway as reachable (fail closed) instead of matching an
+  empty host and printing `covers ""`.
+- docker-compose `env_file` entries are read into the env union and audited; a declared
+  but unreadable env_file is a hard error instead of a silent skip that exited 0.
+- Bind mounts whose host source is host-interpolated (`${HOME}/.aws/credentials`) are kept
+  as surfaces instead of being dropped by the volume parser.
+- `gate` refuses before starting the mock or the eval when a credential lives in a
+  bind-mounted file or an `env_file`; it previously warned, declared "no credential
+  findings", ran the eval and exited 0 with the real credentials still readable.
+
+### Added
+
+- `gate --container-reachable`: binds the mock on all interfaces and writes a base URL
+  containers can reach (`host.docker.internal` on Docker Desktop, first non-loopback IPv4
+  on Linux); a loopback-only `--listen` is rejected. This ships the v0.2 roadmap item; the
+  `benchgate-action` promise is re-scoped to v0.3.
+- Regression tests for every fix above, verified failing against the v0.1.0 tag.
+
+### Changed
+
+- README.md / README.en.md capability tables, caveats, command reference and roadmap now
+  describe the shipped behavior; the site content baseline is refreshed to v0.2.0.
+
 ## [0.1.0] - 2026-10-18
 
 First release: pre-bench credential audit and mock-gateway gate for Harbor/Pier eval sandboxes.

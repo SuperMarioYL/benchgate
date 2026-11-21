@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SuperMarioYL/benchgate/internal/mocks"
 )
 
 // m3 gate flow: mock injected, re-verified, eval executed, config
@@ -167,5 +169,134 @@ func TestGatePropagatesEvalExitCode(t *testing.T) {
 	}
 	if !strings.Contains(string(restored), "sk-or-v1-") {
 		t.Error("config not restored after failing eval")
+	}
+}
+
+// A credential that lives in a bind-mounted file cannot be rewritten, so
+// gate must refuse instead of declaring the config clean and running the
+// eval with the real bytes still readable by the model.
+func TestGateRefusesMountedCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(`
+services:
+  main:
+    environment:
+      HARMLESS: "1"
+    volumes:
+      - "./.env:/app/.env:ro"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(dir, "eval-ran")
+	out, code, err := runRoot(t, "gate", path, "--", "sh", "-c", "echo ran > "+marker)
+	if err == nil {
+		t.Fatalf("gate accepted a mounted credential surface:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "bind-mounted credential file") {
+		t.Errorf("err = %v, want a mount refusal", err)
+	}
+	if code != nil {
+		t.Errorf("exit hook called with %d, want a pre-flight error", *code)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Error("eval ran even though the gate refused")
+	}
+	if strings.Contains(out, "nothing to mock") {
+		t.Errorf("refusal printed the nothing-to-mock message:\n%s", out)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unchanged) != string(original) {
+		t.Error("refused gate modified the config")
+	}
+}
+
+// env_file values are not in the config document, so gate cannot rewrite
+// them either; the refusal must name the surface before the mock starts.
+func TestGateRefusesEnvFileCredential(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gw.env"),
+		[]byte("OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(`
+services:
+  main:
+    env_file: ./gw.env
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code, err := runRoot(t, "gate", "--dry-run", path)
+	if err == nil {
+		t.Fatalf("gate accepted an env_file credential:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "env_file") {
+		t.Errorf("err = %v, want an env_file refusal", err)
+	}
+	if code != nil {
+		t.Errorf("exit hook called with %d, want a pre-flight error", *code)
+	}
+	if !strings.Contains(out, "env_file") {
+		t.Errorf("refusal not reported:\n%s", out)
+	}
+}
+
+// The refusal must not weaken the ordinary env-credential path.
+func TestGateStillGatesEnvCredentials(t *testing.T) {
+	path := writeDirtyConfig(t)
+	out, code, err := runRoot(t, "gate", "--dry-run", path)
+	if err != nil {
+		t.Fatalf("gate dry-run failed: %v\n%s", err, out)
+	}
+	if code != nil {
+		t.Fatalf("exit hook called with %d, want clean return", *code)
+	}
+	if !strings.Contains(out, "re-verified") {
+		t.Errorf("gate did not re-verify the rewritten config:\n%s", out)
+	}
+}
+
+// --container-reachable writes a URL a container can dial, not loopback,
+// and binds all interfaces by default.
+func TestGateContainerReachableDryRun(t *testing.T) {
+	if _, ok := mocks.HostGatewayHost(); !ok {
+		t.Skip("no non-loopback host address on this machine")
+	}
+	path := writeDirtyConfig(t)
+	out, code, err := runRoot(t, "gate", "--container-reachable", "--dry-run", path)
+	if err != nil {
+		t.Fatalf("gate failed: %v\n%s", err, out)
+	}
+	if code != nil {
+		t.Fatalf("exit hook called with %d, want clean return", *code)
+	}
+	if strings.Contains(out, "mock gateway at http://127.0.0.1") ||
+		strings.Contains(out, "mock gateway at http://localhost") {
+		t.Errorf("--container-reachable advertised a loopback URL:\n%s", out)
+	}
+	if !strings.Contains(out, "gate: mock gateway at http://") {
+		t.Errorf("missing mock gateway line:\n%s", out)
+	}
+	if !strings.Contains(out, "re-verified") {
+		t.Errorf("gate did not re-verify the rewritten config:\n%s", out)
+	}
+}
+
+// A loopback-only listen can never be reached by a container, so the
+// combination is rejected instead of silently writing an unreachable URL.
+func TestGateContainerReachableRejectsLoopbackListen(t *testing.T) {
+	_, _, err := runRoot(t, "gate", "--container-reachable", "--listen", "127.0.0.1:0", "--dry-run", writeDirtyConfig(t))
+	if err == nil || !strings.Contains(err.Error(), "container-reachable") {
+		t.Errorf("err = %v, want a container-reachable listen refusal", err)
 	}
 }

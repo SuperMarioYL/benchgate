@@ -36,7 +36,7 @@ Harbor/Pier 这类 Coding Agent 评测沙箱默认可出外网（`no-network`/`a
 
 ```bash
 # 从源码（Go 1.24+）
-go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0
+go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.2.0
 
 # 或下载 release 二进制（linux/darwin × amd64/arm64，含 checksums.txt）
 # https://github.com/SuperMarioYL/benchgate/releases
@@ -50,7 +50,7 @@ go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0
 
 ```bash
 $ benchgate audit benchgate.example.yaml
-benchgate 0.1.0 — credential exposure ledger
+benchgate 0.2.0 — credential exposure ledger
 config: benchgate.example.yaml (job_yaml)
 network: public
 findings: 2 (reachable: 2)
@@ -86,7 +86,7 @@ $ benchgate audit examples/clean.yaml   # findings: 0，exit 0，放行
 ```yaml
 - name: pre-bench credential gate
   run: |
-    go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0
+    go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.2.0
     benchgate audit tasks/hello-world/task.toml
     # exit 1 → 本步失败，评测 job 不会启动
 ```
@@ -99,13 +99,16 @@ benchgate gate benchgate.example.yaml --dry-run
 
 # 正式门禁：mock 注入后运行评测命令，结束后自动还原配置
 benchgate gate benchgate.example.yaml -- harbor run --task tasks/hello-world
+
+# 模型跑在独立容器网络里：自动绑定全接口，并写入容器可达的 mock 地址
+benchgate gate benchgate.example.yaml --container-reachable -- harbor run --task tasks/hello-world
 ```
 
-`gate` 会启动一个本地 OpenAI 兼容 mock 网关，把配置里所有真实凭据值换成占位 key、所有真实网关 URL 换成 mock 地址，复验"没有真实凭据形状、没有真实网关引用"后才把评测命令跑起来，并向评测进程注入 `BENCHGATE_MOCK_URL`。
+`gate` 会启动一个本地 OpenAI 兼容 mock 网关，把配置里所有真实凭据值换成占位 key、所有真实网关 URL 换成 mock 地址，复验"没有真实凭据形状、没有真实网关引用"后才把评测命令跑起来，并向评测进程注入 `BENCHGATE_MOCK_URL`。模型跑在独立容器网络里时加 `--container-reachable`，mock 会自动改写为容器可达地址（见[能力与边界](#能力与边界)）。挂载凭据文件或 `env_file` 凭据属于无法就地替换的表面，`gate` 会在启动前拒绝。
 
 ## 演示
 
-约 30 秒的完整流程录屏（asciinema v2，由真实运行录制，脚本见 [docs/demo/record.sh](docs/demo/record.sh)）：
+约 10 秒的完整流程录屏（asciinema v2，由真实运行录制，脚本见 [docs/demo/record.sh](docs/demo/record.sh)）：
 
 [docs/demo/benchgate-audit.cast](docs/demo/benchgate-audit.cast) — audit 发现可达凭据并给出判定证据；gate 注入 mock 网关，复验零真实外联。
 
@@ -144,25 +147,27 @@ benchgate (Go 单二进制)
 
 ## 能力与边界
 
-| 能力 | v0.1 状态 |
+| 能力 | v0.2 状态 |
 | --- | --- |
 | Harbor `task.toml`（含 `[agent]` 相位覆盖、旧 `allow_internet` 字段）解析 | 已实现 |
-| Harbor job 级 `config.yaml` 与 docker-compose 解析（env 并集 + bind mounts） | 已实现 |
+| Harbor job 级 `config.yaml` 与 docker-compose 解析（env 并集、`env_file`、bind mounts 含 `${VAR}` 插值源） | 已实现 |
 | OpenRouter（`sk-or-v1-`/`sk-or-`）、ModelScope（`ms-` UUID）、通用 `sk-`/`Bearer` 值形状检测 | 已实现 |
 | 凭据命名规则（`*_KEY`/`*_TOKEN`/`*SECRET` 等）与挂载文件（`.env`、`id_rsa`、`*.pem` 等）检测 | 已实现 |
-| network 策略可达性判定（public / allowlist / no-network） | 已实现 |
+| network 策略可达性判定（public / allowlist / no-network；allowlist 下无法归属网关的凭据按可达处理，fail closed） | 已实现 |
 | 网关 endpoint 无鉴权连通性探测（`GET /models`，不带凭据） | 已实现 |
 | 脱敏账本：终端 / `--json` / `--output report.md` | 已实现 |
 | CI exit code 门禁 | 已实现 |
 | mock 网关（models / chat/completions / completions / key）+ 配置改写 + 复验 + 还原 | 已实现 |
 | `docker exec` 进入运行中的容器取证 | 未实现——审计是配置级的，见下 |
-| 容器网络内自动可达的 mock 注入 | 未实现（路线图 v0.2），见下 |
+| 容器网络内自动可达的 mock 注入（`gate --container-reachable`） | 已实现，见下 |
+| 不可 mock 的凭据表面（挂载文件、`env_file` 注入） | gate 预检拒绝，不再放行评测 |
 | hosted 报告上传接口 | 未实现（见[价格](#价格)） |
 
-两条如实说明，用前请读：
+三条如实说明，用前请读：
 
-- **审计是配置级判定 + 无鉴权连通性检查，不是容器内取证。** 可达性来自配置声明的 network 策略（`public` 判可达；`allowlist` 按 `allowed_hosts` 匹配网关 host，匹配刻意宽松、宁可多报；`no-network` 判不可达）。探测只做一次不带 `Authorization` 头的 `GET {gateway}/models`，验证 endpoint 存活、记录状态码——被审计的 key 不会被使用，传输失败只记为"不确定"，不改变判定。v0.1 不 `docker exec` 进容器。
-- **mock 默认绑定 loopback，对容器内模型不是自动可达。** `gate` 在 v0.1 给出的是**配置级保证**：复验后的配置里没有真实 key、没有真实网关 URL，harness 用它启动的评测只会拿到 mock 地址。评测进程与 mock 同主机时（host 上直接跑的 harness、host 网络模式的容器）loopback 即可命中 mock；模型跑在独立 Docker 容器网络里时，还需要让 mock 对容器网络可达（`--listen 0.0.0.0:端口` 并把 base URL 指向 host-gateway 地址），这一步 v0.1 不自动完成，v0.2 计划自动化。
+- **审计是配置级判定 + 无鉴权连通性检查，不是容器内取证。** 可达性来自配置声明的 network 策略（`public` 判可达；`allowlist` 按 `allowed_hosts` 匹配网关 host，匹配刻意宽松、宁可多报；`no-network` 判不可达）。探测只做一次不带 `Authorization` 头的 `GET {gateway}/models`，验证 endpoint 存活、记录状态码——被审计的 key 不会被使用，传输失败只记为"不确定"，不改变判定。v0.2 仍不 `docker exec` 进容器。
+- **mock 默认绑定 loopback；容器网络用 `--container-reachable` 自动可达。** 默认路径仍是配置级保证：复验后的配置里没有真实 key、没有真实网关 URL，harness 用它启动的评测只会拿到 mock 地址，评测进程与 mock 同主机时 loopback 即可命中。模型跑在独立 Docker 容器网络里时，加 `--container-reachable`：mock 自动绑定全接口，并把配置里的 base URL 写成容器可达的 host-gateway 地址（Docker Desktop 用 `host.docker.internal`，Linux 用首个非 loopback IPv4）；`--listen 127.0.0.1:0` 与 `--container-reachable` 组合会被拒绝。Linux 容器仍需能解析 `host.docker.internal`，自动改写 `extra_hosts` 留到 v0.3。
+- **gate 只替换配置文档里的凭据。** 挂载的凭据文件（`.env`、`id_rsa`、`*.pem` 等）与被 `env_file` 注入的值无法就地 mock：`gate` 在启动 mock 与评测之前预检并拒绝（退出非 0），要求先移除挂载或把 key 内联到配置，而不是给出“门禁通过”的假象。
 
 ## 与其他工具的分工
 
@@ -207,7 +212,8 @@ benchgate audit <task.toml|config.yaml|docker-compose.yaml>
 
 benchgate gate <config> -- <评测命令>
   --dry-run       执行改写、复验、还原，不启动评测
-  --listen ADDR   mock 网关监听地址（默认 127.0.0.1:0）
+  --listen ADDR             mock 网关监听地址（默认 127.0.0.1:0）
+  --container-reachable     绑定全接口，并把 base URL 写成容器可达的 host-gateway 地址
 ```
 
 exit code：`0` 无发现；`1` 有发现或运行出错。门禁判定刻意保持二元——单条发现的 `reachable` 细节放在报告里供人判断，exit code 不做策略化解释，避免门禁随政策漂移。
@@ -216,14 +222,14 @@ exit code：`0` 无发现；`1` 有发现或运行出错。门禁判定刻意保
 
 ## 路线图
 
-- **v0.1.x** — 更多 provider 的凭据形状（通用 `sk-`/`Bearer` 已覆盖主流 OpenAI 兼容网关）；报告格式增强。
-- **v0.2** — 容器网络内自动可达的 mock 注入（host-gateway 自动化）；`benchgate-action`：CI 里一个 step 复用整套门禁。
+- **v0.2.x** — 更多 provider 的凭据形状（通用 `sk-`/`Bearer` 已覆盖主流 OpenAI 兼容网关）；报告格式增强。
+- **v0.3** — `benchgate-action`：CI 里一个 step 复用整套门禁；Linux 下自动改写 compose `extra_hosts` 注入 `host.docker.internal:host-gateway`。
 - **hosted** — `benchgate upload` 报告上传接口、团队政策档与漂移告警（见[价格](#价格)）。
 - **持续跟踪上游** — Harbor/Pier 若在默认值里剥离凭据或提供官方 mock（如 PR #3538 方向），`audit` 仍作为合规验证器保留；跟踪记录见 [docs/evidence/repro.md](docs/evidence/repro.md)。
 
 ## 价格
 
-**Hosted 团队政策档**（规划中；v0.1 不含任何 SaaS 组件，也不上传任何数据）：**$99/月/组织**，前 10 家早鸟 **$49/月**。
+**Hosted 团队政策档**（规划中；v0.2 不含任何 SaaS 组件，也不上传任何数据）：**$99/月/组织**，前 10 家早鸟 **$49/月**。
 
 面向要把"gate exit 0"写进组织评测政策的企业 CI 团队：
 

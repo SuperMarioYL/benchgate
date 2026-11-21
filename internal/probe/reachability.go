@@ -100,6 +100,16 @@ func assessPolicy(cfg *config.SandboxConfig, gateway string) (bool, report.Probe
 			Detail: fmt.Sprintf("network_mode %q blocks all container egress; the gateway endpoint is not reachable and the credential is not spendable", cfg.NetworkMode),
 		}
 	case config.NetworkAllowlist:
+		if host == "" {
+			// The provider behind this credential is unknown, so no
+			// allowed_hosts entry can be matched. Under an allowlist the
+			// container still has egress; the audit cannot prove this key
+			// is blocked, so it fails closed.
+			return true, report.ProbeRecord{
+				Kind:   report.EvidencePolicy,
+				Detail: fmt.Sprintf("network_mode %q: the gateway behind this credential cannot be attributed, so the audit cannot prove it is blocked and treats it as reachable (fail closed)", cfg.NetworkMode),
+			}
+		}
 		entry, ok := HostAllowed(cfg.AllowedHosts, host)
 		if ok {
 			return true, report.ProbeRecord{

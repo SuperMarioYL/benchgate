@@ -147,3 +147,81 @@ func TestAuditBadConfig(t *testing.T) {
 		t.Errorf("want error for missing config, got none\n%s", out)
 	}
 }
+
+// An allowlist config whose key value is a host-side template still names
+// its gateway. The ledger must attribute it, match the allowlist entry and
+// never print an empty host in the evidence.
+func TestAuditAllowlistTemplateCredentialIsReachable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "allow.toml")
+	if err := os.WriteFile(path, []byte(`
+schema_version = "1.1"
+
+[agent]
+network_mode = "allowlist"
+allowed_hosts = ["openrouter.ai"]
+
+[environment.env]
+OPENROUTER_API_KEY = "${OPENROUTER_API_KEY}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code, err := runRoot(t, "audit", "--json", "--offline", path)
+	if err != nil {
+		t.Fatalf("audit failed: %v\n%s", err, out)
+	}
+	if code == nil || *code != 1 {
+		t.Fatalf("exit code = %v, want 1", code)
+	}
+	var doc struct {
+		Findings []struct {
+			Path      string `json:"path"`
+			Gateway   string `json:"gateway"`
+			Reachable bool   `json:"reachable"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out)
+	}
+	if len(doc.Findings) != 1 {
+		t.Fatalf("findings = %+v, want 1", doc.Findings)
+	}
+	if doc.Findings[0].Gateway != "openrouter" || !doc.Findings[0].Reachable {
+		t.Errorf("finding = %+v, want gateway=openrouter reachable=true", doc.Findings[0])
+	}
+	if strings.Contains(out, `covers \"\"`) || strings.Contains(out, `covers ""`) {
+		t.Errorf("evidence leaked an empty host:\n%s", out)
+	}
+}
+
+// A compose service that parks the gateway key in env_file must be
+// audited like an inline environment key: reported and exit 1.
+func TestAuditComposeEnvFileCredentialFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gw.env"),
+		[]byte("MODELSCOPE_SDK_TOKEN=ms-11111111-2222-3333-4444-555555555555\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(`
+services:
+  main:
+    env_file: ./gw.env
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code, err := runRoot(t, "audit", "--offline", path)
+	if err != nil {
+		t.Fatalf("audit failed: %v\n%s", err, out)
+	}
+	if code == nil || *code != 1 {
+		t.Fatalf("exit code = %v, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "MODELSCOPE_SDK_TOKEN") {
+		t.Errorf("audit did not report the env_file credential:\n%s", out)
+	}
+	if strings.Contains(out, "ms-11111111-2222-3333-4444-555555555555") {
+		t.Errorf("audit leaked the credential value:\n%s", out)
+	}
+}

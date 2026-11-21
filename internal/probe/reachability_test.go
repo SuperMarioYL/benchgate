@@ -190,3 +190,34 @@ func TestAssessSharesLiveCheckPerGateway(t *testing.T) {
 		t.Errorf("live endpoint hit %d times, want 1 (cached per gateway)", hits)
 	}
 }
+
+// An unattributable gateway under an allowlist cannot be proved blocked:
+// the container still has egress to whatever the allowlist admits, so the
+// audit must fail closed instead of matching an empty host string.
+func TestAssessAllowlistUnattributableIsReachable(t *testing.T) {
+	cfg := &config.SandboxConfig{NetworkMode: config.NetworkAllowlist, AllowedHosts: []string{"openrouter.ai"}}
+	exposures := []report.Exposure{{Surface: report.SurfaceEnv, Path: "CUSTOM_API_KEY", Gateway: detect.GatewayUnknown}}
+
+	got := testProber().Assess(cfg, exposures)
+	if !got[0].Reachable {
+		t.Error("unattributable credential under allowlist must fail closed (reachable)")
+	}
+	detail := got[0].Evidence[0].Detail
+	if !strings.Contains(detail, "cannot be attributed") {
+		t.Errorf("Detail = %q, want an attribution caveat", detail)
+	}
+	if strings.Contains(detail, `covers ""`) {
+		t.Errorf("Detail = %q leaks the empty host into the report", detail)
+	}
+}
+
+// The fail-closed allowlist rule must not weaken no-network.
+func TestAssessNoNetworkUnattributableStaysUnreachable(t *testing.T) {
+	cfg := &config.SandboxConfig{NetworkMode: config.NetworkNone}
+	exposures := []report.Exposure{{Surface: report.SurfaceEnv, Path: "CUSTOM_API_KEY", Gateway: detect.GatewayUnknown}}
+
+	got := testProber().Assess(cfg, exposures)
+	if got[0].Reachable {
+		t.Error("unattributable credential under no-network must stay unreachable")
+	}
+}

@@ -337,3 +337,111 @@ func TestLoadTaskTomlErrors(t *testing.T) {
 		t.Errorf("err = %v, want parse error naming the file", err)
 	}
 }
+
+// compose env_file injects credentials the same way inline environment
+// does; the loader must read it and remember which names came from it.
+func TestLoadComposeReadsEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gw.env"), []byte(`
+# gateway credentials
+export MODELSCOPE_SDK_TOKEN="ms-11111111-2222-3333-4444-555555555555"
+PLAIN=value
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(`
+services:
+  main:
+    env_file:
+      - ./gw.env
+    environment:
+      OPENROUTER_API_KEY: sk-or-v1-inline
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadCompose(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"MODELSCOPE_SDK_TOKEN": "ms-11111111-2222-3333-4444-555555555555",
+		"PLAIN":                "value",
+		"OPENROUTER_API_KEY":   "sk-or-v1-inline",
+	}
+	if !reflect.DeepEqual(cfg.Env, want) {
+		t.Errorf("Env = %v, want %v", cfg.Env, want)
+	}
+	wantVars := []string{"MODELSCOPE_SDK_TOKEN", "PLAIN"}
+	if !reflect.DeepEqual(cfg.EnvFileVars, wantVars) {
+		t.Errorf("EnvFileVars = %v, want %v", cfg.EnvFileVars, wantVars)
+	}
+}
+
+// A declared env_file that cannot be read must fail the load: skipping it
+// would hide every credential it injects.
+func TestLoadComposeMissingEnvFileFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(`
+services:
+  main:
+    env_file: ./gone.env
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadCompose(path)
+	if err == nil || !strings.Contains(err.Error(), "gone.env") {
+		t.Errorf("err = %v, want an env_file error naming the path", err)
+	}
+}
+
+// Compose expands ${VAR} on the host before mounting, so an interpolated
+// source is still a host bind mount and must not be dropped.
+func TestParseBindMountInterpolatedHost(t *testing.T) {
+	m, ok := parseBindMount("${HOME}/.aws/credentials:/root/.aws/credentials:ro")
+	if !ok {
+		t.Fatal("interpolated host mount was dropped")
+	}
+	if m.HostPath != "${HOME}/.aws/credentials" || m.ContainerPath != "/root/.aws/credentials" || !m.ReadOnly {
+		t.Errorf("Mount = %+v", m)
+	}
+}
+
+func TestParseBindMountStillSkipsNamedVolumes(t *testing.T) {
+	cases := []struct {
+		spec string
+		want bool
+	}{
+		{"shared-cache:/var/cache", false},
+		{"data:/data:ro", false},
+		{"/abs/path:/x", true},
+		{"./rel/path:/x", true},
+		{"${HOME}/.aws/credentials:/root/.aws/credentials:ro", true},
+	}
+	for _, tc := range cases {
+		if _, ok := parseBindMount(tc.spec); ok != tc.want {
+			t.Errorf("parseBindMount(%q) = %t, want %t", tc.spec, ok, tc.want)
+		}
+	}
+}
+
+// The full loader must surface an interpolated mount; only the literal
+// sibling used to be reported.
+func TestLoadComposeInterpolatedMount(t *testing.T) {
+	cfg, err := LoadCompose(writeTemp(t, "docker-compose.yaml", `
+services:
+  main:
+    volumes:
+      - "${HOME}/.aws/credentials:/root/.aws/credentials:ro"
+      - "shared-cache:/var/cache"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Mount{{HostPath: "${HOME}/.aws/credentials", ContainerPath: "/root/.aws/credentials", ReadOnly: true}}
+	if !reflect.DeepEqual(cfg.Mounts, want) {
+		t.Errorf("Mounts = %v, want %v", cfg.Mounts, want)
+	}
+}

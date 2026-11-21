@@ -79,6 +79,22 @@ func GatewayForHost(value string) string {
 	}
 }
 
+// gatewayForVarName attributes a credential to a known gateway by the
+// variable name alone. It is the fallback for host-side templates such as
+// `${OPENROUTER_API_KEY}`, whose value is unreadable at audit time: the
+// name still tells the reachability policy which host the key is spent at.
+func gatewayForVarName(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "openrouter"):
+		return GatewayOpenRouter
+	case strings.Contains(n, "modelscope"):
+		return GatewayModelScope
+	default:
+		return GatewayUnknown
+	}
+}
+
 // openrouterPrefix covers sk-or-v1-... and the legacy sk-or-... shape.
 const openrouterPrefix = "sk-or-"
 
@@ -140,7 +156,9 @@ func classifyEnvVar(name, value string) (report.Exposure, bool) {
 
 	// Name-based fallback. A value that is a URL is configuration (a
 	// base URL), not a secret; host-side templates and passthroughs are
-	// still surfaces because the harness resolves them at runtime.
+	// still surfaces because the harness resolves them at runtime. The
+	// gateway comes from the name: a template value cannot reveal the
+	// provider, but OPENROUTER_API_KEY still says where it is spent.
 	if credentialNameRe.MatchString(name) &&
 		!strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
 		resolved := v != "" && !strings.Contains(v, "${")
@@ -154,7 +172,7 @@ func classifyEnvVar(name, value string) (report.Exposure, bool) {
 			Fingerprint: fp,
 			Surface:     report.SurfaceEnv,
 			Path:        name,
-			Gateway:     GatewayUnknown,
+			Gateway:     gatewayForVarName(name),
 			Resolved:    resolved,
 			Source:      SourceVarName,
 		}, true

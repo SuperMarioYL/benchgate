@@ -36,7 +36,7 @@ Running evals offline is not an answer: SWE-bench-style evals must reach the inf
 
 ```bash
 # From source (Go 1.24+)
-go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0
+go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.2.0
 
 # Or grab a release binary (linux/darwin × amd64/arm64, with checksums.txt)
 # https://github.com/SuperMarioYL/benchgate/releases
@@ -50,7 +50,7 @@ The repo ships two example configs: `benchgate.example.yaml` (fixture keys with 
 
 ```bash
 $ benchgate audit benchgate.example.yaml
-benchgate 0.1.0 — credential exposure ledger
+benchgate 0.2.0 — credential exposure ledger
 config: benchgate.example.yaml (job_yaml)
 network: public
 findings: 2 (reachable: 2)
@@ -86,7 +86,7 @@ Wire it into the eval pipeline (ahead of the eval job):
 ```yaml
 - name: pre-bench credential gate
   run: |
-    go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.1.0
+    go install github.com/SuperMarioYL/benchgate/cmd/benchgate@v0.2.0
     benchgate audit tasks/hello-world/task.toml
     # exit 1 → this step fails, the eval job never starts
 ```
@@ -99,13 +99,16 @@ benchgate gate benchgate.example.yaml --dry-run
 
 # The real gate: inject the mock, run the eval command, restore the config
 benchgate gate benchgate.example.yaml -- harbor run --task tasks/hello-world
+
+# Model in its own container network: bind all interfaces and advertise a reachable address
+benchgate gate benchgate.example.yaml --container-reachable -- harbor run --task tasks/hello-world
 ```
 
-`gate` starts a local OpenAI-compatible mock gateway, replaces every real credential value with a placeholder key and every real gateway URL with the mock address, re-verifies that "no real credential shapes and no real gateway references remain", and only then runs the eval command — injecting `BENCHGATE_MOCK_URL` into its environment.
+`gate` starts a local OpenAI-compatible mock gateway, replaces every real credential value with a placeholder key and every real gateway URL with the mock address, re-verifies that "no real credential shapes and no real gateway references remain", and only then runs the eval command — injecting `BENCHGATE_MOCK_URL` into its environment. When the model runs in its own container network, add `--container-reachable` and the mock is rewritten to a container-reachable address (see [Capabilities and limits](#capabilities-and-limits)). Mounted credential files and `env_file` credentials cannot be rewritten in place, so `gate` refuses before starting.
 
 ## Demo
 
-A roughly 30-second recording of the full flow (asciinema v2, captured from real runs; script at [docs/demo/record.sh](docs/demo/record.sh)):
+A roughly 10-second recording of the full flow (asciinema v2, captured from real runs; script at [docs/demo/record.sh](docs/demo/record.sh)):
 
 [docs/demo/benchgate-audit.cast](docs/demo/benchgate-audit.cast) — audit reports the reachable credentials with their evidence; gate injects the mock gateway and re-verifies zero real egress.
 
@@ -144,25 +147,27 @@ Every ledger entry carries metadata only: variable name, prefix class, length, a
 
 ## Capabilities and limits
 
-| Capability | v0.1 status |
+| Capability | v0.2 status |
 | --- | --- |
 | Harbor `task.toml` parsing (incl. `[agent]` phase override, legacy `allow_internet`) | Implemented |
-| Harbor job-level `config.yaml` and docker-compose parsing (env union + bind mounts) | Implemented |
+| Harbor job-level `config.yaml` and docker-compose parsing (env union, `env_file`, bind mounts incl. `${VAR}` sources) | Implemented |
 | Value-shape detection: OpenRouter (`sk-or-v1-`/`sk-or-`), ModelScope (`ms-` UUID), generic `sk-`/`Bearer` | Implemented |
 | Name-based detection (`*_KEY`/`*_TOKEN`/`*SECRET` …) and mounted files (`.env`, `id_rsa`, `*.pem` …) | Implemented |
-| Reachability by network policy (public / allowlist / no-network) | Implemented |
+| Reachability by network policy (public / allowlist / no-network; unattributable keys under allowlist fail closed as reachable) | Implemented |
 | Unauthenticated gateway endpoint liveness probe (`GET /models`, no credentials) | Implemented |
 | Redacted ledger: terminal / `--json` / `--output report.md` | Implemented |
 | CI exit-code gate | Implemented |
 | Mock gateway (models / chat/completions / completions / key) + rewrite + re-verify + restore | Implemented |
 | `docker exec` forensics inside a running container | Not implemented — the audit is config-level, see below |
-| Mock injection reachable from a container network | Not implemented (roadmap v0.2), see below |
+| Mock injection reachable from a container network (`gate --container-reachable`) | Implemented, see below |
+| Unmockable credential surfaces (mounted files, `env_file` injection) | Gate refuses before running, instead of passing |
 | Hosted report upload | Not implemented (see [Pricing](#pricing)) |
 
-Two honest caveats worth reading before you rely on it:
+Three honest caveats worth reading before you rely on it:
 
-- **The audit is a config-level assessment plus an unauthenticated reachability check — not in-container forensics.** Reachability comes from the network policy the config declares (`public` → reachable; `allowlist` → reachable iff `allowed_hosts` covers the gateway host, matched generously on purpose, over-reporting by design; `no-network` → not reachable). The probe is a single `GET {gateway}/models` with no `Authorization` header: it records whether the endpoint is alive and the status code — the audited key is never used, and a transport failure is logged as inconclusive without flipping the verdict. v0.1 does not `docker exec` into containers.
-- **The mock binds to loopback by default and is not automatically reachable from a container.** What `gate` guarantees in v0.1 is at the config level: after re-verification, the patched config contains no real key and no real gateway URL, so an eval started from it can only be handed the mock address. When the eval process shares a host with the mock (a harness run directly on the host, or a container with host networking), loopback is enough. When the model runs in its own Docker container network, you additionally need the mock reachable from that network (`--listen 0.0.0.0:<port>` plus a base URL pointing at a host-gateway address) — v0.1 does not automate this step; automating it is planned for v0.2.
+- **The audit is a config-level assessment plus an unauthenticated reachability check — not in-container forensics.** Reachability comes from the network policy the config declares (`public` → reachable; `allowlist` → reachable iff `allowed_hosts` covers the gateway host, matched generously on purpose, over-reporting by design; `no-network` → not reachable). The probe is a single `GET {gateway}/models` with no `Authorization` header: it records whether the endpoint is alive and the status code — the audited key is never used, and a transport failure is logged as inconclusive without flipping the verdict. v0.2 still does not `docker exec` into containers.
+- **The mock binds to loopback by default; `--container-reachable` makes it container-reachable automatically.** The default path is still the config-level guarantee: after re-verification the patched config contains no real key and no real gateway URL, so an eval started from it can only be handed the mock address, and loopback is enough when the eval shares the host with the mock. When the model runs in its own Docker container network, add `--container-reachable`: the mock binds all interfaces and the base URL written into the config uses a container-reachable host-gateway address (`host.docker.internal` on Docker Desktop, the first non-loopback IPv4 on Linux); combining it with `--listen 127.0.0.1:0` is rejected. Linux containers must still resolve `host.docker.internal`; rewriting `extra_hosts` automatically is planned for v0.3.
+- **`gate` only replaces credentials that live in the config document.** Bind-mounted credential files (`.env`, `id_rsa`, `*.pem`, …) and values injected by a compose `env_file` cannot be mocked in place: `gate` refuses before starting the mock or the eval (non-zero exit) and asks you to remove the mount or inline the key, instead of pretending the gate passed.
 
 ## How it differs
 
@@ -208,7 +213,8 @@ benchgate audit <task.toml|config.yaml|docker-compose.yaml>
 
 benchgate gate <config> -- <eval command>
   --dry-run       rewrite, re-verify and restore without starting the eval
-  --listen ADDR   address for the mock gateway (default 127.0.0.1:0)
+  --listen ADDR             address for the mock gateway (default 127.0.0.1:0)
+  --container-reachable     bind all interfaces and write a base URL containers can reach
 ```
 
 Exit codes: `0` no findings; `1` findings or an error. The gate verdict is deliberately binary — per-finding `reachable` details live in the report for humans, while the exit code avoids policy-dependent interpretation so the gate can't drift.
@@ -217,14 +223,14 @@ Restore in `gate` is crash-safe: the original config is backed up as `*.benchgat
 
 ## Roadmap
 
-- **v0.1.x** — more provider credential shapes (generic `sk-`/`Bearer` already covers mainstream OpenAI-compatible gateways); report format improvements.
-- **v0.2** — mock injection automatically reachable from container networks (host-gateway automation); `benchgate-action`: reuse the whole gate as a single CI step.
+- **v0.2.x** — more provider credential shapes (generic `sk-`/`Bearer` already covers mainstream OpenAI-compatible gateways); report format improvements.
+- **v0.3** — `benchgate-action`: reuse the whole gate as a single CI step; automatic compose `extra_hosts` rewriting so Linux containers resolve `host.docker.internal:host-gateway`.
 - **hosted** — `benchgate upload` report submission, team policy profiles and drift alerts (see [Pricing](#pricing)).
 - **Upstream tracking** — if Harbor/Pier start stripping credentials by default or shipping an official mock (e.g. the direction of PR #3538), `audit` remains as a compliance verifier; the tracking log lives in [docs/evidence/repro.md](docs/evidence/repro.md).
 
 ## Pricing
 
-**Hosted team policy tier** (planned; v0.1 ships no SaaS component and uploads no data): **$99/month/organization**, early-bird **$49/month** for the first 10 teams.
+**Hosted team policy tier** (planned; v0.2 ships no SaaS component and uploads no data): **$99/month/organization**, early-bird **$49/month** for the first 10 teams.
 
 Built for CI teams that want "gate exit 0" written into their org's eval policy:
 

@@ -90,7 +90,7 @@ func TestScanEnvValueShapes(t *testing.T) {
 				gateway string
 				source  string
 				resolve bool
-			}{"OPENROUTER_API_KEY": {GatewayUnknown, SourceVarName, false}},
+			}{"OPENROUTER_API_KEY": {GatewayOpenRouter, SourceVarName, false}},
 		},
 		{
 			name:         "compose host passthrough with no value",
@@ -283,5 +283,61 @@ func TestGatewayMappings(t *testing.T) {
 		if got := GatewayForHost(value); got != want {
 			t.Errorf("GatewayForHost(%q) = %q, want %q", value, got, want)
 		}
+	}
+}
+
+// A host-side template hides the provider value, but the variable name
+// still attributes the credential to a gateway. That attribution is what
+// lets the reachability policy match an allowlist entry instead of an
+// empty host.
+func TestClassifyEnvVarInfersGatewayFromName(t *testing.T) {
+	cases := map[string]string{
+		"OPENROUTER_API_KEY":   GatewayOpenRouter,
+		"my_openrouter_token":  GatewayOpenRouter,
+		"MODELSCOPE_SDK_TOKEN": GatewayModelScope,
+		"modelscope_api_key":   GatewayModelScope,
+	}
+	for name, want := range cases {
+		ex, ok := classifyEnvVar(name, "${"+name+"}")
+		if !ok {
+			t.Errorf("%s: not classified as a credential", name)
+			continue
+		}
+		if ex.Gateway != want {
+			t.Errorf("%s: Gateway = %q, want %q", name, ex.Gateway, want)
+		}
+		if ex.Resolved {
+			t.Errorf("%s: Resolved = true for a host-side template", name)
+		}
+		if ex.Source != SourceVarName {
+			t.Errorf("%s: Source = %q, want %q", name, ex.Source, SourceVarName)
+		}
+	}
+}
+
+// Names that carry no gateway stay unknown: the allowlist policy must not
+// invent an attribution.
+func TestClassifyEnvVarUnknownGatewayUnchanged(t *testing.T) {
+	for _, name := range []string{"GITHUB_TOKEN", "CUSTOM_API_KEY", "PASSTHROUGH_SECRET"} {
+		ex, ok := classifyEnvVar(name, "plain-value")
+		if !ok {
+			t.Errorf("%s: not classified as a credential", name)
+			continue
+		}
+		if ex.Gateway != GatewayUnknown {
+			t.Errorf("%s: Gateway = %q, want %q", name, ex.Gateway, GatewayUnknown)
+		}
+	}
+}
+
+// Value shapes still win over the name: a ModelScope token stored in an
+// OPENROUTER_API_KEY variable is a ModelScope credential.
+func TestClassifyEnvVarValueShapeWinsOverName(t *testing.T) {
+	ex, ok := classifyEnvVar("OPENROUTER_API_KEY", "ms-11111111-2222-3333-4444-555555555555")
+	if !ok {
+		t.Fatal("not classified as a credential")
+	}
+	if ex.Gateway != GatewayModelScope {
+		t.Errorf("Gateway = %q, want %q (value shape wins)", ex.Gateway, GatewayModelScope)
 	}
 }

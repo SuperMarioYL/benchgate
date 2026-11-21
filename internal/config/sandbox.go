@@ -2,9 +2,10 @@
 // configuration: a Harbor/Pier task.toml, a Harbor job-level config.yaml,
 // or a docker-compose file. Everything it returns is a surface the model
 // under test can potentially reach once the eval starts: environment
-// variables injected into the container, the network policy that decides
-// whether those variables can be spent against a real gateway, and host
-// directories bind-mounted into the sandbox.
+// variables injected into the container (inline environment or a compose
+// env_file), the network policy that decides whether those variables can
+// be spent against a real gateway, and host directories bind-mounted into
+// the sandbox.
 //
 // Harbor's schema is the reference (task.toml schema_version >= 1.1 with
 // [environment.env] string pairs and a network_mode of "public",
@@ -71,6 +72,11 @@ type SandboxConfig struct {
 	AllowedHosts []string
 	// Mounts are the host bind mounts; only compose configs carry mounts.
 	Mounts []Mount
+	// EnvFileVars names the env vars whose values were read from a compose
+	// env_file. The values are in Env like any other injected variable;
+	// the names are kept so gate can refuse to rewrite a surface that does
+	// not live in the config document itself.
+	EnvFileVars []string
 }
 
 // Load parses a config file, picking the loader from the file extension.
@@ -178,9 +184,10 @@ func loadJobYAMLRaw(path string, raw []byte) (*SandboxConfig, error) {
 }
 
 // LoadCompose parses a docker-compose file. Env vars are the union across
-// services: the model container shares the compose network with the
-// sidecars, so a credential parked in any service env is in scope. Mounts
-// are the bind mounts across services; named volumes are skipped.
+// services and their env_file entries: the model container shares the
+// compose network with the sidecars, so a credential parked in any service
+// env is in scope. Mounts are the bind mounts across services; named
+// volumes are skipped.
 func LoadCompose(path string) (*SandboxConfig, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -213,6 +220,12 @@ func loadComposeRaw(path string, raw []byte) (*SandboxConfig, error) {
 	anyEgress := false
 	for _, name := range names {
 		svc := file.Services[name]
+
+		// Compose applies env_file first, then lets the inline
+		// environment override it.
+		if err := cfg.applyEnvFiles(path, svc.EnvFile); err != nil {
+			return nil, err
+		}
 
 		switch env := svc.Environment.(type) {
 		case map[string]any:
@@ -253,6 +266,73 @@ func loadComposeRaw(path string, raw []byte) (*SandboxConfig, error) {
 	return cfg, nil
 }
 
+// applyEnvFiles folds the KEY=VALUE files a compose service declares into
+// the env map. Paths resolve relative to the compose file, as compose
+// does. An unreadable env_file is an error: silently skipping it would
+// hide every credential it injects.
+func (cfg *SandboxConfig) applyEnvFiles(composePath string, spec any) error {
+	paths, err := envFilePaths(spec)
+	if err != nil {
+		return fmt.Errorf("compose file %s: %w", composePath, err)
+	}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(filepath.Dir(composePath), p)
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("read env_file %s: %w", p, err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			key, value, ok := strings.Cut(strings.TrimPrefix(line, "export "), "=")
+			key = strings.TrimSpace(key)
+			if !ok || key == "" {
+				continue
+			}
+			cfg.Env[key] = strings.Trim(strings.TrimSpace(value), `"'`)
+			cfg.EnvFileVars = append(cfg.EnvFileVars, key)
+		}
+	}
+	sort.Strings(cfg.EnvFileVars)
+	uniq := cfg.EnvFileVars[:0]
+	for i, name := range cfg.EnvFileVars {
+		if i == 0 || name != cfg.EnvFileVars[i-1] {
+			uniq = append(uniq, name)
+		}
+	}
+	cfg.EnvFileVars = uniq
+	return nil
+}
+
+// envFilePaths normalizes compose env_file (a single path or a list).
+func envFilePaths(spec any) ([]string, error) {
+	switch v := spec.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		return []string{v}, nil
+	case []any:
+		paths := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("env_file entries must be paths, got %T", item)
+			}
+			paths = append(paths, s)
+		}
+		return paths, nil
+	default:
+		return nil, fmt.Errorf("env_file must be a path or a list of paths, got %T", spec)
+	}
+}
+
 // taskTomlFile mirrors the parts of a Harbor task.toml that create
 // surfaces. Unknown tables ([task], [metadata], [verifier], [solution],
 // ...) are deliberately not modeled and are ignored by the parser.
@@ -290,7 +370,10 @@ type composeFile struct {
 
 type composeService struct {
 	// Environment is either a map (KEY: value) or a list (KEY=value).
-	Environment any      `yaml:"environment"`
+	Environment any `yaml:"environment"`
+	// EnvFile is a path or list of paths of KEY=VALUE files compose reads
+	// and injects alongside Environment.
+	EnvFile     any      `yaml:"env_file"`
 	Volumes     []string `yaml:"volumes"`
 	NetworkMode any      `yaml:"network_mode"`
 }
@@ -336,8 +419,12 @@ func normalizeEnv(in map[string]any) map[string]string {
 }
 
 // parseBindMount parses a compose volume spec into a Mount, keeping only
-// host bind mounts ("/abs" or "./rel" sources). Named volumes and
-// anonymous ("container-only") volumes carry no host file surface.
+// host bind mounts ("/abs", "./rel" or a host-interpolated "${VAR}/..."
+// source). Compose expands ${VAR} on the host before mounting, so the
+// template is still a host path; a named volume behind interpolation is
+// over-reported, which is the deliberate direction for an audit. Named
+// volumes and anonymous ("container-only") volumes carry no host file
+// surface.
 func parseBindMount(spec string) (Mount, bool) {
 	parts := strings.Split(spec, ":")
 	var host, container, mode string
@@ -352,7 +439,7 @@ func parseBindMount(spec string) (Mount, bool) {
 	if host == "" || container == "" {
 		return Mount{}, false
 	}
-	if !strings.HasPrefix(host, "/") && !strings.HasPrefix(host, ".") {
+	if !strings.HasPrefix(host, "/") && !strings.HasPrefix(host, ".") && !strings.Contains(host, "${") {
 		return Mount{}, false
 	}
 	readOnly := false

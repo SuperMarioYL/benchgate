@@ -1,7 +1,7 @@
 {
   "product": "benchgate",
-  "version": "0.1.0",
-  "recorded_at": "2026-10-18",
+  "version": "0.2.0",
+  "recorded_at": "2026-11-22",
   "environment": {
     "go": "1.24",
     "os": "darwin/arm64",
@@ -34,7 +34,10 @@
         ],
         "exit_code": 1
       },
-      "audit_clean": { "findings": 0, "exit_code": 0 },
+      "audit_clean": {
+        "findings": 0,
+        "exit_code": 0
+      },
       "gate_dry_run": {
         "replacements": 4,
         "reverify": "no real credential shapes and no real gateway endpoints remain",
@@ -52,9 +55,10 @@
   "limitations": [
     "The audit is config-level: reachability is derived from the declared network policy (public/allowlist/no-network) plus an unauthenticated endpoint liveness GET from the audit host. It does not docker-exec into a running container.",
     "The probe never sends the audited credential; only an unauthenticated GET /models is issued.",
-    "The gate's v0.1 guarantee is config-level: the patched config carries no real key and no real gateway URL (enforced by re-verification). The mock binds loopback by default, so eval processes in a separate Docker container network need the mock made reachable (--listen on a reachable interface plus a host-gateway base URL); this is not automated in v0.1.",
-    "Mounted credential files are detected but cannot be auto-mocked; gate warns and requires their removal.",
-    "Built-in gateway endpoints cover OpenRouter and ModelScope; other providers fall back to generic sk-/Bearer and name-based detection with gateway=unknown and no live probe.",
-    "The CI exit code is binary: any finding exits 1, including findings judged not reachable; per-finding reachable verdicts live in the report."
+    "The gate's guarantee is config-level: the patched config carries no real key and no real gateway URL (enforced by re-verification). The mock binds loopback by default; `gate --container-reachable` binds all interfaces and writes a container-reachable host-gateway base URL (host.docker.internal on Docker Desktop, first non-loopback IPv4 on Linux). Linux containers still need host.docker.internal to resolve; automatic extra_hosts rewriting is planned for v0.3.",
+    "Mounted credential files and compose env_file credentials cannot be auto-mocked: gate refuses before starting the mock or the eval and requires the mount to be removed or the key inlined.",
+    "Built-in gateway endpoints cover OpenRouter and ModelScope; other providers fall back to generic sk-/Bearer and name-based detection with gateway=unknown and no live probe. Under allowlist, an unattributable gateway is treated as reachable (fail closed).",
+    "The CI exit code is binary: any finding exits 1, including findings judged not reachable; per-finding reachable verdicts live in the report.",
+    "compose env_file entries are read relative to the compose file; the env union includes them, and a declared but unreadable env_file is a hard error."
   ]
 }

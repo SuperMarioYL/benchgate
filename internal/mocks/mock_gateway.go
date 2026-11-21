@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -317,8 +318,60 @@ func StartGateway(addr string) (*Gateway, error) {
 // Addr returns the bound "host:port".
 func (g *Gateway) Addr() string { return g.listener.Addr().String() }
 
-// BaseURL returns the mock's API base URL to write into the config.
-func (g *Gateway) BaseURL() string { return "http://" + g.Addr() + "/api/v1" }
+// BaseURL returns the mock's API base URL using the listener's own host.
+func (g *Gateway) BaseURL() string {
+	host, _, err := net.SplitHostPort(g.Addr())
+	if err != nil {
+		host = g.Addr()
+	}
+	return g.BaseURLForHost(host)
+}
+
+// BaseURLForHost renders the API base URL for the host the eval process
+// (or its container) will dial. IPv6 hosts are bracketed.
+func (g *Gateway) BaseURLForHost(host string) string {
+	_, port, err := net.SplitHostPort(g.Addr())
+	if err != nil {
+		return "http://" + net.JoinHostPort(host, "") + "/api/v1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/api/v1"
+}
+
+// HostGatewayHost returns the address a container uses to reach services
+// on the Docker host: host.docker.internal on Docker Desktop, otherwise
+// the host's first non-loopback IPv4 address. ok is false when no such
+// address exists (the mock cannot be advertised to containers).
+func HostGatewayHost() (string, bool) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", false
+	}
+	return hostGatewayHost(runtime.GOOS, addrs)
+}
+
+// hostGatewayHost is the platform decision, split out so both branches
+// are testable without the machine's real interfaces.
+func hostGatewayHost(goos string, addrs []net.Addr) (string, bool) {
+	if goos == "darwin" || goos == "windows" {
+		return "host.docker.internal", true
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), true
+		}
+	}
+	return "", false
+}
 
 // Requests returns the request log recorded so far.
 func (g *Gateway) Requests() []RequestLog {

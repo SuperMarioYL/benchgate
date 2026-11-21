@@ -3,6 +3,7 @@ package mocks
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -384,5 +385,60 @@ func TestGatewayBindsLoopback(t *testing.T) {
 	}()
 	if !strings.HasPrefix(gw.Addr(), "127.0.0.1:") {
 		t.Errorf("Addr = %q, want loopback bind", gw.Addr())
+	}
+}
+
+// The base URL written into the config may name a different host than the
+// listener (the address a container dials while the mock binds 0.0.0.0).
+func TestBaseURLForHost(t *testing.T) {
+	gw, err := StartGateway("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = gw.Stop(ctx)
+	}()
+	_, port, err := net.SplitHostPort(gw.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := gw.BaseURL(), "http://127.0.0.1:"+port+"/api/v1"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+	if got, want := gw.BaseURLForHost("10.0.0.7"), "http://10.0.0.7:"+port+"/api/v1"; got != want {
+		t.Errorf("BaseURLForHost = %q, want %q", got, want)
+	}
+	if got, want := gw.BaseURLForHost("::1"), "http://[::1]:"+port+"/api/v1"; got != want {
+		t.Errorf("BaseURLForHost(::1) = %q, want %q", got, want)
+	}
+}
+
+// The platform decision behind --container-reachable.
+func TestHostGatewayHost(t *testing.T) {
+	ipv4 := func(s string) net.Addr {
+		return &net.IPNet{IP: net.ParseIP(s), Mask: net.CIDRMask(24, 32)}
+	}
+	cases := []struct {
+		name  string
+		goos  string
+		addrs []net.Addr
+		want  string
+		ok    bool
+	}{
+		{"docker desktop mac", "darwin", nil, "host.docker.internal", true},
+		{"docker desktop windows", "windows", nil, "host.docker.internal", true},
+		{"linux picks first routable v4", "linux", []net.Addr{ipv4("127.0.0.1"), ipv4("10.1.2.3")}, "10.1.2.3", true},
+		{"loopback only", "linux", []net.Addr{ipv4("127.0.0.1")}, "", false},
+		{"no addresses", "linux", nil, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := hostGatewayHost(tc.goos, tc.addrs)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("hostGatewayHost(%s, %v) = (%q, %t), want (%q, %t)", tc.goos, tc.addrs, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }

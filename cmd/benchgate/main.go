@@ -16,7 +16,7 @@ import (
 
 // version is the released version; release builds override it with
 // -ldflags "-X main.version=<tag>". Keep in sync with the VERSION file.
-var version = "0.1.0"
+var version = "0.2.0"
 
 // exitFunc is the process exit hook, swappable in tests so commands can
 // assert their CI exit codes.
